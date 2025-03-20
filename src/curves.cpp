@@ -28,96 +28,116 @@ void CCurves::CalcCurvePoint(const CVector& startCoors, const CVector& endCoors,
     CVector& resultSpeed)  // TODO(iFarbod): TraversalTimeInMillis, param name has typo
 {
 #ifdef USE_CUSTOM_IMPL
-    // Clamp time to [0, 1]
-    if (Time > 1.0f)
-    {
-        Time = 1.0f;
-    }
-    else if (Time < 0.0f)
-    {
-        Time = 0.0f;
-    }
+        // This function calculates a point on a smooth curve between two positions with direction vectors.
+    // The curve consists of straight segments and a bend connecting them for natural-looking movement.
 
-    // Calculate speed variation in the bend
+    // Normalize time parameter to ensure calculations remain within valid range
+    f32 OurTime = VCLAMP(0.0f, 1.0f, Time);
+
+    // Get speed adjustment factor needed for realistic bends (slower in curves, faster on straights)
     f32 SpeedVariation = CalcSpeedVariationInBend(startCoors, endCoors, startDir.x, startDir.y, endDir.x, endDir.y);
 
-    // Calculate distances to intersection points
+    // Find where the ray from start position would intersect with end ray
     f32 DistToPoint1 = DistForLineToCrossOtherLine(
         startCoors.x, startCoors.y, startDir.x, startDir.y, endCoors.x, endCoors.y, endDir.x, endDir.y);
 
-    f32 DistToPoint2 = DistForLineToCrossOtherLine(
+    // Find where the ray from end position would intersect with start ray (negative because direction is flipped)
+    f32 DistToPoint2 = -DistForLineToCrossOtherLine(
         endCoors.x, endCoors.y, endDir.x, endDir.y, startCoors.x, startCoors.y, startDir.x, startDir.y);
 
-    // Variables for intermediate calculations
-    f32 BendDist = 0.0f;
-    f32 BendDist_Time = 0.0f;
-    f32 CurrentDist_Time = 0.0f;
-    f32 Interpol = 0.0f;
-    f32 StraightDist2 = 0.0f;
-    f32 StraightDist1 = 0.0f;
-    f32 TotalDist_Time = 0.0f;
-    f32 OurTime = 0.0f;
-    CVector CoorsOnLine1;
-    CVector CoorsOnLine2;
-
-    // Check if either distance is invalid (<= 0)
     if (DistToPoint1 <= 0.0f || DistToPoint2 <= 0.0f)
     {
-        // Calculate straight-line distance between start and end coordinates
-        CVector Delta = startCoors - endCoors;
-        f32 StraightDist = Delta.Magnitude2D();
+        // If rays don't intersect properly, fall back to a simpler curved path approximation
+        // This happens when the directions would never cross or are almost parallel
 
-        // Calculate corrected distance
-        f32 Interpol = 0.0f;
-        f32 CorrectedDist = CalcCorrectedDist(StraightDist * Time, StraightDist, SpeedVariation, &Interpol);
+        const f32 StraightDist = (startCoors - endCoors).Magnitude2D();
 
-        // Calculate coordinates along the curve
-        resultCoor = startCoors + startDir * CorrectedDist;
+        // Calculate path distances adjusted for speed variation
+        f32 BendDist = StraightDist / (1.0f - SpeedVariation);
+        f32 BendDist_Time = BendDist * OurTime;
+        f32 CurrentDist_Time = CalcCorrectedDist(BendDist_Time, BendDist, SpeedVariation, &SpeedVariation);
 
-        // Calculate speed vector
-        f32 InvTime = 1.0f - Time;
-        f32 TotalDist = StraightDist / (1.0f - SpeedVariation);
-        f32 SpeedScale = TotalDist / (static_cast<f32>(TraverselTimeInMillis) * 0.001f);
+        // Calculate position along start ray
+        const CVector startPoint = startCoors + (startDir * CurrentDist_Time);
 
-        resultSpeed = (endDir * Time + startDir * InvTime) * SpeedScale;
-        resultSpeed.z = 0.0f;  // Assuming 2D movement
+        // Calculate position along end ray
+        const f32 distDiff = CurrentDist_Time - StraightDist;
+        const CVector endPoint = endCoors + (endDir * distDiff);
+
+        // Blend between the two projected positions based on speed variation
+        f32 Interpol = 1.0f - SpeedVariation;
+        f32 StraightDist1 = 0.0f;
+        f32 StraightDist2 = 0.0f;
+
+        resultCoor = (startPoint * Interpol) + (endPoint * SpeedVariation);
+
+        // Zero speed for this special case (likely a placeholder as this value isn't used)
+        f32 TotalDist_Time = 0.0f;
+        const f32 timeScale = static_cast<f32>(TraverselTimeInMillis) * 0.001f;
+        const f32 t1 = 1.0f - OurTime;
+
+        resultSpeed = ((endDir * OurTime) + (startDir * t1)) * (TotalDist_Time / timeScale);
+        resultSpeed.z = 0.0f;
 
         return;
     }
 
-    // Determine the minimum valid distance (CMaths::Min twice like above?)
-    f32 MinDist = CMaths::Min(DistToPoint1, DistToPoint2);
-    MinDist = CMaths::Min(MinDist, 5.0f);
+    // For properly intersecting rays, create a three-segment path:
+    // 1. Straight segment from start
+    // 2. Curved bend in the middle
+    // 3. Straight segment to end
 
-    // Calculate the remaining distances
-    f32 BendDist1 = DistToPoint1 - MinDist;
-    f32 BendDist2 = DistToPoint2 - MinDist;
+    // Limit how sharp the bend can be for natural movement
+    f32 BendDistOneSegment = CMaths::Min(CMaths::Min(DistToPoint1, DistToPoint2), 5.0f);
 
-    // Calculate total distance
-    f32 TotalDist = MinDist + MinDist + BendDist1 + BendDist2;
+    // Calculate the three segment lengths
+    f32 StraightDist1 = DistToPoint1 - BendDistOneSegment;
+    f32 StraightDist2 = DistToPoint2 - BendDistOneSegment;
+    f32 BendDist = BendDistOneSegment * 2.0f;
+    f32 TotalDist_Time = StraightDist1 + BendDist + StraightDist2;
 
-    // Calculate current distance at the given time
-    f32 CurrentDist = TotalDist * Time;
+    const f32 distanceAtTime = TotalDist_Time * OurTime;
 
-    // Calculate coordinates along the curve
-    if (CurrentDist < BendDist1)
+    if (distanceAtTime < StraightDist1)
     {
-        resultCoor = startCoors + startDir * CurrentDist;
+        // Position is on the first straight segment (linear interpolation from start)
+        resultCoor = startCoors + (startDir * distanceAtTime);
+    }
+    else if (distanceAtTime > (StraightDist1 + BendDist))
+    {
+        // Position is on the final straight segment (linear interpolation to end)
+        const f32 secondSegmentDist = distanceAtTime - (StraightDist1 + BendDist);
+        resultCoor = endCoors + (endDir * secondSegmentDist);
     }
     else
     {
-        f32 RemainingDist = CurrentDist - BendDist1;
-        f32 Interpol = RemainingDist / (MinDist + MinDist);
+        // Position is in the curved bend section - requires double interpolation
+        // First interpolate through the bend progress, then between the influenced points
+        f32 BendInter = (distanceAtTime - StraightDist1) / BendDist;
 
-        resultCoor = startCoors + startDir * BendDist1 + endDir * RemainingDist;
+        // Find the start point of the bend
+        CVector BendStartCoors = startCoors + (startDir * StraightDist1);
+
+        // Find the end point of the bend
+        CVector BendEndCoors = endCoors - (endDir * StraightDist2);
+
+        // Create smooth transition by double-interpolating between the bend points
+        const f32 oneMinusBendInter = 1.0f - BendInter;
+
+        // Create influence points that extend outward from the bend endpoints
+        const CVector startInfluence = BendStartCoors + (startDir * (BendDistOneSegment * BendInter));
+        const CVector endInfluence = BendEndCoors - (endDir * (BendDistOneSegment * oneMinusBendInter));
+
+        // Blend between influence points to create curved path
+        resultCoor = (startInfluence * oneMinusBendInter) + (endInfluence * BendInter);
     }
 
-    // Calculate speed vector
-    f32 InvTime = 1.0f - Time;
-    f32 SpeedScale = TotalDist / (static_cast<f32>(TraverselTimeInMillis) * 0.001f);
+    // Calculate velocity based on blend of start/end directions and total path length
+    const f32 timeScale = static_cast<f32>(TraverselTimeInMillis) * 0.001f;
+    const f32 t1 = 1.0f - OurTime;
 
-    resultSpeed = (endDir * Time + startDir * InvTime) * SpeedScale;
-    resultSpeed.z = 0.0f;  // Assuming 2D movement
+    resultSpeed = ((endDir * OurTime) + (startDir * t1)) * (TotalDist_Time / timeScale);
+    resultSpeed.z = 0.0f;
 #else
     Call<0x43C900>(&startCoors, &endCoors, &startDir, &endDir, Time, TraverselTimeInMillis, &resultCoor, &resultSpeed);
 #endif
