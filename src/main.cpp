@@ -6,9 +6,12 @@
 #include <type_traits>
 
 #include "curves.hpp"
+#include "approx.hpp"
 
-#define epsilon 0.0000001f
-#define FLOAT_EQUAL(a, b) (fabs((a) - (b)) < (epsilon))
+// #define epsilon 0.0000001f
+// #define FLOAT_EQUAL(a, b) (fabs((a) - (b)) < (epsilon))
+
+#define FLOAT_EQUAL(a, b) ((a) == Approx(b))
 
 void cn_init_console()
 {
